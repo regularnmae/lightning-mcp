@@ -53,7 +53,7 @@ not here.
   and a JSON body carrying `code` (1502 = rune refusal) and `message`.
 - **Rune restriction grammar** is `method^<prefix>` (a *prefix* match). The
   `$` is literal — `method^getinfo$` never matches. `createrune null '<restrictions>'`
-  is how `stack/deploy/install.sh` creates a rune from scratch (passing `null` as the rune).
+  is how `stack` creates a rune from scratch (passing `null` as the rune).
 - The middleware **reads the POST body** to learn the tool name, then replays
   it via `_replay(body, original)`, which delegates to the original `receive`.
   Returning `http.disconnect` instead truncates the SSE response and the client
@@ -67,7 +67,11 @@ not here.
   test (tests is a package) — use the fixtures.
 - A new top-level module must go in the `Containerfile`'s `COPY` lines **and**
   pyright's `include`.
-- Publishing: `PublishPort=8104:8000`. Open `8104/tcp` in firewalld.
-- `stack/deploy/install.sh` writes `$DATA_DIR/config/lightning-mcp/{token,node,spend}.env`
-  (mode 600), creates the runes on the node, and renders the unit. The env-file
-  shapes are documented in `stack/deploy/examples/lightning-mcp/`.
+- The image declares no `HEALTHCHECK`; the `stack` unit supplies
+  `HealthCmd=python /app/healthcheck.py`. `stack` also writes this server's env
+  files (both tokens, the two runes, the TLS setting and the spend policy),
+  creates the runes on the node, and publishes the host port; see that repo for
+  the unit and env-file locations, and
+  `stack/deploy/examples/lightning-mcp/` for their shape.
+- The server binds `0.0.0.0:8000` and serves `/mcp` (token-gated); `/health` is
+  open and answers exactly `{"status":"ok"}`.

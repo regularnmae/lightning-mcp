@@ -44,7 +44,7 @@ a rune can be restricted to a set of methods. The client carries two:
 which adds the payment methods. Read tools use the read rune; spend tools use
 the spend rune. Even if the server's own token gate were bypassed, the read
 rune **cannot** call `pay` — the node refuses it with error 1502.
-`stack/deploy/install.sh` creates both runes with `lightning-cli createrune`.
+`stack` creates both runes with `lightning-cli createrune`.
 
 Plus the usual caps: `MAX_PAYMENT_PER_CALL_SATS` and
 `MAX_PAYMENT_PER_DAY_SATS` are both required and positive when spending is on,
@@ -96,18 +96,15 @@ for `spend=True`); `tests/test_spend.py` covers caps, budget and dry runs.
 ## Deploying
 
 The runtime for this server — its quadlet unit and env wiring — is owned by the
-separate [`stack`](https://github.com/regularnmae/stack) repo, not here:
+separate [`stack`](https://github.com/regularnmae/stack) repo, not here. `stack`
+supplies both tokens, creates the two runes **on the node** with `createrune`,
+seeds the TLS setting and the spend policy, publishes the host port and provides
+the healthcheck; see that repo for the unit and env-file locations. Spending
+stays off until you flip `ENABLE_SPENDING` in the spend env `stack` seeds (shape:
+`stack/deploy/examples/lightning-mcp/`).
 
 ```sh
 cd ~/build/stack
 ./deploy.sh --only lightning-mcp   # build the image, restart, wait for "(healthy)"
 ./deploy.sh                        # the whole stack
 ```
-
-`stack/deploy.sh` opens `8104/tcp` in firewalld on a fresh host.
-`stack/deploy/install.sh` writes three env files under
-`$DATA_DIR/config/lightning-mcp/` (mode 600): `token.env` (both tokens), `node.env`
-(the two runes, **created on the node** with `createrune`, plus the TLS
-setting) and `spend.env` (seeded with `ENABLE_SPENDING=0`). Spending stays off
-until you edit `spend.env` and restart. The env-file shapes are documented in
-`stack/deploy/examples/lightning-mcp/`.
