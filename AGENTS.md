@@ -3,8 +3,10 @@
 Flat three-module Python MCP server (not a package). `server.py` is the app —
 config, read tools, the gated spend tools, the satoshi budget and the
 two-token middleware; `rpc.py` is its **stdlib-only** clnrest client;
-`healthcheck.py` is the container healthcheck probe. Rootless podman/quadlet,
-unit under `deploy/`. uv only. `mcp` is 2.x (`MCPServer`).
+`healthcheck.py` is the container healthcheck probe. Rootless podman/quadlet;
+the runtime — its quadlet unit, the `npm-network` it shares and the env wiring —
+is owned by the `stack` repo (https://github.com/regularnmae/stack), not here.
+uv only. `mcp` is 2.x (`MCPServer`).
 
 One of four sibling crypto MCP servers. This is a **money server** — the
 safety posture matters more than the features. Read `README.md` first.
@@ -16,8 +18,12 @@ uv run ruff check .            # lint (CI gate)
 uv run pyright                 # typecheck (CI gate)
 uv run pytest -q               # tests, no network
 uv run python scripts/smoke.py # boots the real app on a loopback port
-./deploy.sh                    # builds, restarts lightning-mcp.service, waits for "(healthy)"
 ```
+
+Deployment is owned by the `stack` repo: `cd ~/build/stack && ./deploy.sh --only lightning-mcp`
+rebuilds the image, restarts `lightning-mcp.service` and waits for "(healthy)";
+`./deploy.sh` deploys the whole stack. The unit and `npm-network` live there,
+not here.
 
 ## Safety invariants — do not weaken these
 
@@ -47,7 +53,7 @@ uv run python scripts/smoke.py # boots the real app on a loopback port
   and a JSON body carrying `code` (1502 = rune refusal) and `message`.
 - **Rune restriction grammar** is `method^<prefix>` (a *prefix* match). The
   `$` is literal — `method^getinfo$` never matches. `createrune null '<restrictions>'`
-  is how `install.sh` creates a rune from scratch (passing `null` as the rune).
+  is how `stack/deploy/install.sh` creates a rune from scratch (passing `null` as the rune).
 - The middleware **reads the POST body** to learn the tool name, then replays
   it via `_replay(body, original)`, which delegates to the original `receive`.
   Returning `http.disconnect` instead truncates the SSE response and the client
@@ -62,6 +68,6 @@ uv run python scripts/smoke.py # boots the real app on a loopback port
 - A new top-level module must go in the `Containerfile`'s `COPY` lines **and**
   pyright's `include`.
 - Publishing: `PublishPort=8104:8000`. Open `8104/tcp` in firewalld.
-- `deploy/install.sh` writes `~/.config/lightning-mcp/{token,node,spend}.env`
-  (mode 600), creates the runes on the node, and symlinks the unit;
-  `npm-network.network` is linked only if no other repo already provided it.
+- `stack/deploy/install.sh` writes `~/.config/lightning-mcp/{token,node,spend}.env`
+  (mode 600), creates the runes on the node, and symlinks the unit. The env-file
+  shapes are documented in `stack/deploy/examples/lightning-mcp/`.
