@@ -45,10 +45,35 @@ write_secret() {
     chmod 600 "$path"
 }
 
+# A rune the node will actually accept. `checkrune` is the authoritative
+# check: createrune happily returns a rune whose unique_id the node has
+# blacklisted, and that only shows up when a tool call fails with 1503.
+rune_usable() {
+    [ -n "$1" ] || return 1
+    podman exec lightningd lightning-cli -k checkrune rune="$1" method=getinfo \
+        >/dev/null 2>&1
+}
+
+# Create a rune and prove it usable, or echo nothing. createrune mints a
+# fresh unique_id on every call, and a node may have blacklisted an id range
+# (the node this repo was first deployed against had ids 0..3 blacklisted),
+# so a brand-new rune can come back already blacklisted. Create another (next
+# id) until one passes. Every restriction here is `method^...`, so `getinfo`
+# is always in range and is the probe.
 create_rune() {
-    # $1: a JSON restrictions string. Echoes the rune, or nothing on failure.
-    podman exec lightningd lightning-cli createrune null "$1" 2>/dev/null \
-        | grep -o '"rune": *"[^"]*"' | head -n1 | sed 's/.*"\([^"]*\)"$/\1/' || true
+    local restrictions="$1" rune=""
+    for _ in $(seq 1 12); do
+        rune=$(podman exec lightningd lightning-cli createrune null "$restrictions" 2>/dev/null \
+            | grep -o '"rune": *"[^"]*"' | head -n1 | sed 's/.*"\([^"]*\)"$/\1/' || true)
+        [ -n "$rune" ] || return 0
+        if rune_usable "$rune"; then
+            printf '%s' "$rune"
+            return 0
+        fi
+        printf '==> created rune %s... was refused (blacklisted id?); retrying\n' \
+            "${rune:0:8}" >&2
+    done
+    printf '%s' "$rune"
 }
 
 mkdir -p "$ENV_DIR"
@@ -78,20 +103,45 @@ EOF
 fi
 
 # 2. runes + TLS ----------------------------------------------------------
+read_rune=""
+spend_rune=""
+tls_insecure=""
+ca_cert=""
 if [ -s "$NODE_FILE" ]; then
-    log "node env present: $NODE_FILE"
-else
-    read_rune=""
-    spend_rune=""
-    if command -v podman >/dev/null 2>&1; then
-        read_rune=$(create_rune "[[$READ_METHODS]]")
-        spend_rune=$(create_rune "[[$SPEND_METHODS]]")
-    fi
-    if [ -n "$read_rune" ]; then
-        log "created a read rune and a read+spend rune on the node"
+    read_rune=$(sed -n 's/^LIGHTNING_RUNE=//p' "$NODE_FILE" | head -n1)
+    spend_rune=$(sed -n 's/^LIGHTNING_SPEND_RUNE=//p' "$NODE_FILE" | head -n1)
+    tls_insecure=$(sed -n 's/^LIGHTNING_TLS_INSECURE=//p' "$NODE_FILE" | head -n1)
+    ca_cert=$(sed -n 's/^LIGHTNING_CA_CERT=//p' "$NODE_FILE" | head -n1)
+fi
+
+# Re-running is a no-op only while the stored runes are usable. A rune can be
+# silently unusable -- a blacklisted unique_id, which is exactly what the
+# first deploy hit -- so check rather than trust the file. If the node cannot
+# be reached the refresh finds nothing and the existing values are kept.
+node_needs_write=0
+[ -s "$NODE_FILE" ] || node_needs_write=1
+if command -v podman >/dev/null 2>&1 \
+    && ! { rune_usable "$read_rune" && rune_usable "$spend_rune"; }; then
+    log "creating runes on the node"
+    new_read=$(create_rune "[[$READ_METHODS]]")
+    new_spend=$(create_rune "[[$SPEND_METHODS]]")
+    if [ -n "$new_read" ] && [ -n "$new_spend" ]; then
+        read_rune="$new_read"
+        spend_rune="$new_spend"
+        node_needs_write=1
+        log "created a usable read rune and a read+spend rune"
     else
-        log "could not create runes; fill in $NODE_FILE by hand"
+        log "could not refresh the runes (is lightningd up?); keeping any existing ones"
     fi
+fi
+
+if [ "$node_needs_write" = 1 ]; then
+    if [ -n "$read_rune" ]; then
+        log "runes ready"
+    else
+        log "no runes available; fill in $NODE_FILE by hand"
+    fi
+    [ -n "$tls_insecure" ] || tls_insecure=1
     write_secret "$NODE_FILE" <<EOF
 # Runes created by deploy/install.sh. The read rune names only read methods;
 # the spend rune adds the payment methods. The MCP uses the spend rune only
@@ -101,9 +151,14 @@ LIGHTNING_SPEND_RUNE=$spend_rune
 # clnrest serves a self-signed certificate. 1 skips verification, which is
 # acceptable over the podman network; set LIGHTNING_CA_CERT to the node's
 # cert.pem and this to 0 for a stricter setup.
-LIGHTNING_TLS_INSECURE=1
+LIGHTNING_TLS_INSECURE=$tls_insecure
 EOF
+    if [ -n "$ca_cert" ]; then
+        printf 'LIGHTNING_CA_CERT=%s\n' "$ca_cert" >> "$NODE_FILE"
+    fi
     log "wrote $NODE_FILE (mode 600)"
+else
+    log "node env present and usable: $NODE_FILE"
 fi
 
 # 3. spending policy ------------------------------------------------------
