@@ -68,6 +68,6 @@ not here.
 - A new top-level module must go in the `Containerfile`'s `COPY` lines **and**
   pyright's `include`.
 - Publishing: `PublishPort=8104:8000`. Open `8104/tcp` in firewalld.
-- `stack/deploy/install.sh` writes `~/.config/lightning-mcp/{token,node,spend}.env`
-  (mode 600), creates the runes on the node, and symlinks the unit. The env-file
+- `stack/deploy/install.sh` writes `$DATA_DIR/config/lightning-mcp/{token,node,spend}.env`
+  (mode 600), creates the runes on the node, and renders the unit. The env-file
   shapes are documented in `stack/deploy/examples/lightning-mcp/`.

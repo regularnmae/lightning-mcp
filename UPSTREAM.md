@@ -4,7 +4,7 @@ This repo owns only the **application** — its Python code, tests, CI and
 `Containerfile`. It ships no unit and no env file. The runtime is owned by
 [`stack`](https://github.com/regularnmae/stack), which holds every quadlet unit
 and the `npm-network.network` the MCP servers share, and renders the
-`~/.config/<name>/*.env` files. See `stack/deploy/` and
+`$DATA_DIR/config/<name>/*.env` files. See `stack/deploy/` and
 `stack/deploy/examples/lightning-mcp/`.
 
 It does **not** own `lightningd` (or `tor`/`bitcoind` behind it). Those units
@@ -40,6 +40,6 @@ cd ~/build/stack
 ./deploy.sh --only lightning-mcp   # build the image, restart, wait for "(healthy)"
 ```
 
-Payments stay **off** until you edit `~/.config/lightning-mcp/spend.env`.
+Payments stay **off** until you edit `$DATA_DIR/config/lightning-mcp/spend.env`.
 `stack/deploy/install.sh` needs `lightningd` running to create the runes, and
 `./deploy.sh` opens `8104/tcp` in firewalld.

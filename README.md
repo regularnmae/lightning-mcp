@@ -106,7 +106,7 @@ cd ~/build/stack
 
 `stack/deploy.sh` opens `8104/tcp` in firewalld on a fresh host.
 `stack/deploy/install.sh` writes three env files under
-`~/.config/lightning-mcp/` (mode 600): `token.env` (both tokens), `node.env`
+`$DATA_DIR/config/lightning-mcp/` (mode 600): `token.env` (both tokens), `node.env`
 (the two runes, **created on the node** with `createrune`, plus the TLS
 setting) and `spend.env` (seeded with `ENABLE_SPENDING=0`). Spending stays off
 until you edit `spend.env` and restart. The env-file shapes are documented in
