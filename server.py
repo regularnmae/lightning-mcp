@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import json
 import logging
@@ -67,6 +68,20 @@ if ENABLE_SPENDING and (MAX_PAYMENT_PER_CALL_SATS <= 0 or MAX_PAYMENT_PER_DAY_SA
 
 MCP_ALLOW_ANONYMOUS = _env_flag("MCP_ALLOW_ANONYMOUS")
 HEALTH_PATH = "/health"
+
+# Readiness path: /health says the process is up, this says lightningd answers.
+# Deliberately separate -- a node with no peers, or one still catching up on
+# bitcoind, must not fail a liveness probe and restart the container.
+READY_PATH = "/ready"
+READY_TIMEOUT = 5.0
+# /ready is unauthenticated, so the answer is cached for a few seconds: a
+# poller hammering the path then costs one node round trip per TTL instead of
+# one per request.
+READY_CACHE_TTL = 5.0
+_ready_cache: tuple[float, dict[str, Any], int] | None = None
+# Created lazily, inside the running loop: an asyncio.Lock binds to the loop
+# that first awaits it, and this server has exactly one in production.
+_ready_lock: asyncio.Lock | None = None
 
 # The read token gates the endpoint; the spend token is additionally required
 # for the write tools. With spending enabled a spend token must be set.
@@ -415,6 +430,56 @@ if ENABLE_SPENDING:
         return _call_spend("close", {"id": id, "unilateral": unilateral})
 
 
+async def _readiness() -> tuple[dict[str, Any], int]:
+    """`/ready`'s answer, cached for READY_CACHE_TTL seconds.
+
+    The path is unauthenticated, so without the cache any client could turn
+    one HTTP request into one node request. The cache is a plain module
+    global: a stale-by-five-seconds blockheight is still the right answer for
+    a readiness probe. The lock means a burst of concurrent requests produces
+    one probe rather than one each.
+    """
+    global _ready_cache, _ready_lock
+    if _ready_lock is None:
+        _ready_lock = asyncio.Lock()
+    async with _ready_lock:
+        cached = _ready_cache
+        if cached is not None and time.monotonic() - cached[0] < READY_CACHE_TTL:
+            return cached[1], cached[2]
+        body, status_code = await _probe_readiness()
+        _ready_cache = (time.monotonic(), body, status_code)
+        return body, status_code
+
+
+async def _probe_readiness() -> tuple[dict[str, Any], int]:
+    """Ask lightningd for its state, off the event loop with a short timeout.
+
+    Returns the JSON body and status code: 200 with the node's block height and
+    peer count when it answers, 503 with the reason when it does not. Peers are
+    not a readiness condition -- a node with none still serves its tools.
+    """
+    try:
+        info = await asyncio.to_thread(rpc.call, "getinfo", None)
+    except RPCError as err:
+        logger.warning("/ready: lightningd is not answering: %s", err.message)
+        return {"status": "unready", "error": err.message}, 503
+    except Exception as err:  # noqa: BLE001 - reported, never raised at a probe
+        logger.exception("/ready: unexpected error")
+        return {"status": "unready", "error": str(err)}, 503
+    if not isinstance(info, dict):
+        return {"status": "unready", "error": "lightningd returned an unexpected body"}, 503
+    warning = next(
+        (value for key, value in sorted(info.items()) if key.startswith("warning") and value),
+        None,
+    )
+    return {
+        "status": "ready",
+        "blockheight": info.get("blockheight"),
+        "num_peers": info.get("num_peers"),
+        "warning": warning,
+    }, 200
+
+
 class BearerAuthMiddleware:
     """Pure-ASGI bearer auth plus the spend-token gate.
 
@@ -424,6 +489,8 @@ class BearerAuthMiddleware:
     enabled.
 
     A missing read token is a startup error. GET /health stays unauthenticated.
+    GET /ready does the same and adds whether lightningd answers, on a short
+    timeout, for the same reason.
     """
 
     def __init__(self, app: Any, read_token: str | None, spend_token: str | None) -> None:
@@ -456,6 +523,14 @@ class BearerAuthMiddleware:
             from starlette.responses import JSONResponse
 
             response = JSONResponse({"status": "ok"})
+            await response(scope, receive, send)
+            return
+
+        if scope.get("path") == READY_PATH:
+            from starlette.responses import JSONResponse
+
+            body, status_code = await _readiness()
+            response = JSONResponse(body, status_code=status_code)
             await response(scope, receive, send)
             return
 

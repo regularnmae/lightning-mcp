@@ -74,4 +74,8 @@ not here.
   the unit and env-file locations, and
   `stack/deploy/examples/lightning-mcp/` for their shape.
 - The server binds `0.0.0.0:8000` and serves `/mcp` (token-gated); `/health` is
-  open and answers exactly `{"status":"ok"}`.
+  open and answers exactly `{"status":"ok"}`, `/ready` is open and reports
+  `blockheight`, `num_peers` and any `warning_*` from `getinfo` (503 when the
+  node does not answer). `/ready` must never become the unit's `HealthCmd`: a
+  node with no peers or a warning is legitimately red, and restarting it would
+  not fix either.

@@ -113,3 +113,96 @@ def test_enabling_spending_requires_a_spend_token(monkeypatch) -> None:
     monkeypatch.setattr(server, "ENABLE_SPENDING", True)
     with pytest.raises(RuntimeError):
         BearerAuthMiddleware(Inner(), READ, None)
+
+
+@pytest.fixture(autouse=True)
+def _clear_ready_cache():
+    """The readiness answer is a module global; start every test cold."""
+    server._ready_cache = None
+    server._ready_lock = None
+    yield
+    server._ready_cache = None
+    server._ready_lock = None
+
+
+async def drive_json(middleware, sc: dict) -> tuple[int | None, dict]:
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await middleware(sc, receive, send)
+    status = next((m["status"] for m in sent if m["type"] == "http.response.start"), None)
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return status, json.loads(body) if body else {}
+
+
+@pytest.mark.anyio
+async def test_ready_reports_the_node_state(mw, monkeypatch) -> None:
+    middleware, inner = mw
+    monkeypatch.setattr(
+        server.rpc,
+        "call",
+        lambda method, params=None: {
+            "blockheight": 975_153,
+            "num_peers": 0,
+            "warning_bitcoind_sync": "still in ibd",
+        },
+    )
+    status, body = await drive_json(middleware, scope(path="/ready", method="GET"))
+    assert status == 200
+    assert body == {
+        "status": "ready",
+        "blockheight": 975_153,
+        "num_peers": 0,
+        "warning": "still in ibd",
+    }
+    assert inner.called is False
+
+
+@pytest.mark.anyio
+async def test_ready_is_unready_when_the_node_does_not_answer(mw, monkeypatch) -> None:
+    from rpc import RPCError
+
+    middleware, _inner = mw
+
+    def _fail(method, params=None):
+        raise RPCError("cannot reach the lightning node")
+
+    monkeypatch.setattr(server.rpc, "call", _fail)
+    status, body = await drive_json(middleware, scope(path="/ready", method="GET"))
+    assert status == 503
+    assert body["status"] == "unready"
+    assert "cannot reach" in body["error"]
+
+
+@pytest.mark.anyio
+async def test_ready_needs_no_token(mw, monkeypatch) -> None:
+    middleware, _inner = mw
+    monkeypatch.setattr(server.rpc, "call", lambda method, params=None: {"num_peers": 1})
+    assert (await drive_json(middleware, scope(path="/ready", method="GET")))[0] == 200
+
+
+@pytest.mark.anyio
+async def test_ready_is_cached_between_requests(mw, monkeypatch) -> None:
+    middleware, _inner = mw
+    calls = []
+
+    def _info(method, params=None):
+        calls.append(method)
+        return {"num_peers": 0}
+
+    monkeypatch.setattr(server.rpc, "call", _info)
+    await drive_json(middleware, scope(path="/ready", method="GET"))
+    await drive_json(middleware, scope(path="/ready", method="GET"))
+    assert calls == ["getinfo"]
+
+
+@pytest.mark.anyio
+async def test_a_similar_path_is_not_ready(mw) -> None:
+    middleware, inner = mw
+    assert await drive(middleware, scope(path="/readyz", method="GET")) == 401
+    assert inner.called is False

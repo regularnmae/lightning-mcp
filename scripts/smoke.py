@@ -40,7 +40,14 @@ def request(url: str, token: str | None = None, method: str = "GET", body=None):
 
 def main() -> int:
     port = free_port()
-    env = {**os.environ, "LIGHTNING_MCP_TOKEN": TOKEN, "LOG_LEVEL": "INFO"}
+    env = {
+        **os.environ,
+        "LIGHTNING_MCP_TOKEN": TOKEN,
+        "LOG_LEVEL": "INFO",
+        # Nothing is listening on port 1, so /ready has a deterministic
+        # answer: the node is unreachable.
+        "LIGHTNING_REST_URL": "http://127.0.0.1:1",
+    }
     process = subprocess.Popen(
         [sys.executable, "server.py"],
         env={**env, "MCP_HOST": "127.0.0.1", "MCP_PORT": str(port)},
@@ -71,6 +78,14 @@ def main() -> int:
         if status != 200:
             failures.append(f"/health returned {status}, want 200")
 
+        # /ready is the readiness half: the (deliberately unreachable) node
+        # cannot answer, so it is 503 with an unready report.
+        status, body = request(f"{base}/ready")
+        if status != 503:
+            failures.append(f"/ready with no node returned {status}, want 503")
+        if '"unready"' not in body:
+            failures.append(f"/ready body was not an unready report: {body[:200]}")
+
         status, body = request(f"{base}/mcp")
         if status != 401:
             failures.append(f"/mcp without a token returned {status}, want 401")
@@ -92,7 +107,7 @@ def main() -> int:
             for line in failures:
                 print("FAIL:", line)
             return 1
-        print("smoke: health open, mcp gated, handshake ok")
+        print("smoke: health open, ready reports the node, mcp gated, handshake ok")
         return 0
     finally:
         process.terminate()
